@@ -77,13 +77,11 @@ async function writeBinary(keyOrPath: string, buf: Buffer) {
     return;
   }
 
-  // Older SDK supports only 'public'
+  // Create a new blob each write; our reader will always pick the newest
   await put(keyOrPath, buf, {
-     access: 'public',          // your current SDK only supports "public"
-    addRandomSuffix: false,    // keep stable filename
+    access: 'public',
+    addRandomSuffix: true,      // ← IMPORTANT
     contentType: CT_XLSX,
-    allowOverwrite: true, 
-    //cacheControl: 'no-store',
   });
 }
 
