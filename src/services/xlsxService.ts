@@ -124,10 +124,9 @@ async function writeBinary(keyOrPath: string, buf: Buffer) {
 
   // Blob: overwrite same pathname (no random suffix)
   await put(keyOrPath, buf, {
-    access: 'private',
+    access: 'public',
     addRandomSuffix: false,
     contentType: CONTENT_TYPE_XLSX,
-    cacheControl: 'no-store',
   });
 }
 
@@ -150,7 +149,7 @@ async function writeSheetJSON(
   // show full precision (no rounding in Excel UI)
   for (const addr of Object.keys(ws)) {
     if (addr[0] === '!') continue;
-    const cell: any = (ws as any)[addr];
+    const cell: XLSX.CellObject = (ws as Record<string, XLSX.CellObject>)[addr];
     if (cell && cell.t === 'n') cell.z = '0.###############';
   }
 

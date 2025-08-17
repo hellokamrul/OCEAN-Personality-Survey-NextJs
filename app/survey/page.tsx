@@ -185,7 +185,7 @@ useEffect(() => {
 
       eventsRef.current.push({
         Type: pe.type,                // 'pointermove' / 'pointerdown' / 'pointerrawupdate'
-        PointerType: pe.pointerType as any,
+        PointerType: pe.pointerType as string,
         X: x,                         // CSS px (can be fractional on some hardware)
         Y: y,
         XPerc: x / W,                 // 0..1
@@ -251,18 +251,18 @@ useEffect(() => {
   document.addEventListener('pointerup',   onPointerUp,   { passive: true });
 
   // if supported, listen to raw updates too
-  document.addEventListener('pointerrawupdate' as any, onPointerRaw as any, { passive: true });
+  document.addEventListener('pointerrawupdate', onPointerRaw as EventListener, { passive: true });
 
   document.addEventListener('keydown', onKeyDown);
   window.addEventListener('scroll', onScroll, { passive: true });
 
   return () => {
-    document.removeEventListener('pointermove', onPointerMove as any);
-    document.removeEventListener('pointerdown', onPointerDown as any);
-    document.removeEventListener('pointerup',   onPointerUp as any);
-    document.removeEventListener('pointerrawupdate' as any, onPointerRaw as any);
-    document.removeEventListener('keydown', onKeyDown as any);
-    window.removeEventListener('scroll', onScroll as any);
+    document.removeEventListener('pointermove', onPointerMove);
+    document.removeEventListener('pointerdown', onPointerDown);
+    document.removeEventListener('pointerup',   onPointerUp);
+    document.removeEventListener('pointerrawupdate', onPointerRaw as EventListener);
+    document.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('scroll', onScroll);
   };
 }, []);
 
@@ -298,17 +298,27 @@ useEffect(() => {
 
   const handlePrev = () => setStep(1);
 
-  const computeScores = () => {
-    const v = (q:string) => parseInt(answers[q] || '0', 10) || 0;
+  type Scores = {
+    Extraversion: number;
+    Agreeableness: number;
+    Conscientiousness: number;
+    EmotionalStability: number;
+    Openness: number;
+    Neuroticism: number;
+  };
+
+  const computeScores = (): Scores => {
+    const v = (q: string) => parseInt(answers[q] || '0', 10) || 0;
     const s = {
       Extraversion: (v('q1') + rev(v('q6'))) / 2,
       Agreeableness: (rev(v('q2')) + v('q7')) / 2,
       Conscientiousness: (v('q3') + rev(v('q8'))) / 2,
       EmotionalStability: (rev(v('q4')) + v('q9')) / 2,
       Openness: (v('q5') + rev(v('q10'))) / 2,
+      Neuroticism: 0,
     };
-    (s as any).Neuroticism = 8 - s.EmotionalStability;
-    return s as any;
+    s.Neuroticism = 8 - s.EmotionalStability;
+    return s;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -381,7 +391,7 @@ useEffect(() => {
             </div>
             <div className="field">
               <label>Living Area:</label>
-              <select required value={livingArea} onChange={e=>setLivingArea(e.target.value as any)}>
+              <select required value={livingArea} onChange={e=>setLivingArea(e.target.value as 'Urban' | 'Rural' | '')}>
                 <option value="">Select...</option>
                 <option value="Urban">Urban</option>
                 <option value="Rural">Rural</option>
@@ -389,7 +399,7 @@ useEffect(() => {
             </div>
             <div className="field">
               <label>Gender:</label>
-              <select required value={gender} onChange={e=>setGender(e.target.value as any)}>
+              <select required value={gender} onChange={e=>setGender(e.target.value as 'Male' | 'Female' | '')}>
                 <option value="">Select...</option>
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
@@ -492,7 +502,7 @@ useEffect(() => {
                   );
                 })}
                 <div style={{marginTop:'10px', fontSize:'.95rem'}}>
-                  Neuroticism (inverse of Emotional Stability): {(scores as any).Neuroticism.toFixed(2)} / 7 • {band7((scores as any).Neuroticism)}
+                  Neuroticism (inverse of Emotional Stability): {scores.Neuroticism.toFixed(2)} / 7 • {band7(scores.Neuroticism)}
                 </div>
               </>
             )}

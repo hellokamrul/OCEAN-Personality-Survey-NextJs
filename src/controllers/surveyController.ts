@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { SurveyPayload, SelectedImage } from '../models/survey';
+import { SurveyPayload } from '../models/survey';
 import { computeTipiScores } from '../utils/tipi';
 import { appendRows, ensureDataDir, FILES } from '../services/xlsxService';
+// import { SelectedImage } from '../models/survey';
 
 export async function handleSubmit(payload: SurveyPayload) {
   await ensureDataDir();
@@ -56,6 +57,7 @@ const evRows = (payload.ActivityEvents || []).map((e, i) => ({
 
   if (evRows.length) appendRows(FILES.events, 'Events', evRows);
 
+  type SelectedImage = { id: number; like?: string };
   let sel: SelectedImage[] = [];
   try { sel = JSON.parse(payload.SelectedImages || '[]'); } catch {}
   const imgRows = sel.map(x => ({
