@@ -62,6 +62,14 @@ async function readBinary(keyOrPath: string): Promise<Buffer | null> {
   }
 }
 
+// async function writeBinary(keyOrPath: string, buf: Buffer) {
+//   if (!USE_BLOB) {
+//     await fs.mkdir(path.dirname(keyOrPath), { recursive: true });
+//     await fs.writeFile(keyOrPath, buf);
+//     return;
+//   }
+
+// src/services/xlsxService.ts
 async function writeBinary(keyOrPath: string, buf: Buffer) {
   if (!USE_BLOB) {
     await fs.mkdir(path.dirname(keyOrPath), { recursive: true });
@@ -71,9 +79,10 @@ async function writeBinary(keyOrPath: string, buf: Buffer) {
 
   // Older SDK supports only 'public'
   await put(keyOrPath, buf, {
-    access: 'public',
-    addRandomSuffix: false,        // stable key: survey/xxx.xlsx
+     access: 'public',          // your current SDK only supports "public"
+    addRandomSuffix: false,    // keep stable filename
     contentType: CT_XLSX,
+    allowOverwrite: true, 
     //cacheControl: 'no-store',
   });
 }
