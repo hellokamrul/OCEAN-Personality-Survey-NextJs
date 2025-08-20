@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readFileBuffer } from '../../../../src/services/xlsxService';
+import { getDownloadFile } from '../../../../src/services/xlsxService';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -9,15 +9,17 @@ export async function GET(req: NextRequest) {
   if (type !== 'participants' && type !== 'events' && type !== 'images') {
     return new NextResponse('Bad request', { status: 400 });
   }
-  const buf = await readFileBuffer(type as 'participants' | 'events' | 'images');
-  if (!buf) return new NextResponse('File not found', { status: 404 });
-  const filename = `survey_${type}.xlsx`;
-  // Convert Node.js Buffer to Uint8Array for NextResponse
-  const uint8Array = new Uint8Array(buf);
-  return new NextResponse(uint8Array, {
+
+  const file = await getDownloadFile(type as 'participants' | 'events' | 'images');
+  if (!file) return new NextResponse('File not found', { status: 404 });
+
+  return new NextResponse(new Uint8Array(file.buf), {
     headers: {
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Type': file.contentType,
+      // If you prefer a fixed name, replace with `survey_${type}.xlsx`
+      'Content-Disposition': `attachment; filename="${file.filename}"`,
+      // prevent CDN caching stale file
+      'Cache-Control': 'no-store',
     },
   });
 }

@@ -4,8 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { put, list } from '@vercel/blob';
 
-const CT_XLSX =
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const CT_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // Use Blob on Vercel (or when STORAGE=blob), FS locally
 const USE_BLOB =
@@ -30,21 +29,38 @@ export async function ensureDataDir() {
   if (!USE_BLOB) await fs.mkdir(FS_DIR, { recursive: true });
 }
 
+// ---------- helpers ----------
+function keyToPrefix(keyOrPath: string) {
+  // for blobs like survey_events-XXXX.xlsx
+  return keyOrPath.replace(/\.xlsx$/i, '');
+}
+
+async function fetchBlobToBuffer(url: string): Promise<Buffer | null> {
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) return null;
+  const ab = await r.arrayBuffer();
+  return Buffer.from(ab);
+}
+
 // ---------- I/O primitives ----------
 async function readBinary(keyOrPath: string): Promise<Buffer | null> {
   if (!USE_BLOB) {
-    try { return await fs.readFile(keyOrPath); } catch { return null; }
+    try {
+      return await fs.readFile(keyOrPath);
+    } catch {
+      return null;
+    }
   }
 
-  // No `get` in this SDK version → list by prefix, prefer exact match, else newest
   try {
-    const { blobs } = await list({ prefix: keyOrPath });
+    // list by prefix so files with random suffix are included
+    const prefix = keyToPrefix(keyOrPath);
+    const { blobs } = await list({ prefix });
     if (!blobs.length) return null;
 
-    // exact match first
+    // prefer exact match if it exists
     let item = blobs.find(b => b.pathname === keyOrPath);
     if (!item) {
-      // pick newest by uploadedAt
       blobs.sort(
         (a, b) =>
           new Date(b.uploadedAt || 0).getTime() -
@@ -53,23 +69,12 @@ async function readBinary(keyOrPath: string): Promise<Buffer | null> {
       item = blobs[0];
     }
 
-    const r = await fetch(item.url, { cache: 'no-store' });
-    if (!r.ok) return null;
-    const ab = await r.arrayBuffer();
-    return Buffer.from(ab);
+    return await fetchBlobToBuffer(item.url);
   } catch {
     return null;
   }
 }
 
-// async function writeBinary(keyOrPath: string, buf: Buffer) {
-//   if (!USE_BLOB) {
-//     await fs.mkdir(path.dirname(keyOrPath), { recursive: true });
-//     await fs.writeFile(keyOrPath, buf);
-//     return;
-//   }
-
-// src/services/xlsxService.ts
 async function writeBinary(keyOrPath: string, buf: Buffer) {
   if (!USE_BLOB) {
     await fs.mkdir(path.dirname(keyOrPath), { recursive: true });
@@ -77,10 +82,10 @@ async function writeBinary(keyOrPath: string, buf: Buffer) {
     return;
   }
 
-  // Create a new blob each write; our reader will always pick the newest
+  // Create a new blob each write; reader will always pick the newest by prefix
   await put(keyOrPath, buf, {
     access: 'public',
-    addRandomSuffix: true,      // ← IMPORTANT
+    addRandomSuffix: true, // set to false if you want a single stable object
     contentType: CT_XLSX,
   });
 }
@@ -101,7 +106,7 @@ async function writeSheetJSON(
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
 
-  // show full precision for numbers in Excel/Sheets
+  // keep full numeric precision when viewed in Excel/Sheets
   for (const addr of Object.keys(ws)) {
     if (addr[0] === '!') continue;
     const cell: XLSX.CellObject = (ws as Record<string, XLSX.CellObject>)[addr];
@@ -113,15 +118,61 @@ async function writeSheetJSON(
   await writeBinary(fileKeyOrPath, buf);
 }
 
+// ---------- public APIs used by your controller ----------
 export async function appendRows(
   fileKeyOrPath: string,
   sheetName: string,
   newRows: Record<string, unknown>[]
 ) {
-  const cur = (await readSheetJSON(fileKeyOrPath, sheetName)) as Record<string, unknown>[];
+  const cur = (await readSheetJSON(fileKeyOrPath, sheetName)) as Record<
+    string,
+    unknown
+  >[];
   await writeSheetJSON(fileKeyOrPath, sheetName, [...cur, ...newRows]);
 }
 
+// For legacy callers
 export async function readFileBuffer(which: keyof typeof FILES) {
   return await readBinary(FILES[which]);
+}
+
+// For download route: return buffer + a sensible filename + content-type
+export async function getDownloadFile(
+  which: keyof typeof FILES
+): Promise<{ buf: Buffer; filename: string; contentType: string } | null> {
+  const desired = FILES[which];
+
+  if (!USE_BLOB) {
+    const buf = await readBinary(desired);
+    if (!buf) return null;
+    return {
+      buf,
+      filename: path.basename(desired),
+      contentType: CT_XLSX,
+    };
+  }
+
+  // production: always read from Blob (newest by prefix)
+  const prefix = keyToPrefix(desired);
+  const { blobs } = await list({ prefix });
+  if (!blobs.length) return null;
+
+  let item = blobs.find(b => b.pathname === desired);
+  if (!item) {
+    blobs.sort(
+      (a, b) =>
+        new Date(b.uploadedAt || 0).getTime() -
+        new Date(a.uploadedAt || 0).getTime()
+    );
+    item = blobs[0];
+  }
+
+  const buf = await fetchBlobToBuffer(item.url);
+  if (!buf) return null;
+
+  const filename =
+    item.pathname.split('/').pop() ||
+    path.basename(desired); // keep a friendly name if needed
+
+  return { buf, filename, contentType: CT_XLSX };
 }
