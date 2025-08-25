@@ -67,13 +67,16 @@ const productLabels = [
   "Mens Premium Blank T-shirt - Cream",
   "Fabrilife Mens Premium T-shirt - Grid"
 ];
-const maleImages = productLabels.map((label, i) => ({ id: i + 1, src: `/_next/static/media/male_data-not-bundled/${encodeURIComponent(label)}.jpg`, label }));
-// ^ Tip: keep your real images under /public/male_data/. Using /public: the URL is "/male_data/...":
-const maleImagesPublic = productLabels.map((label, i) => ({ id: i + 1, src: `/male_data/${encodeURIComponent(label)}.jpg`, label }));
+
+const maleImagesPublic = productLabels.map((label, i) => ({
+  id: i + 1,
+  src: `/male_data/${encodeURIComponent(label)}.jpg`,
+  label
+}));
 
 const FEMALE_COUNT = 80;
 const femaleImagesPublic = Array.from({ length: FEMALE_COUNT }, (_, i) => ({
-  id: (productLabels.length) + i + 1,
+  id: productLabels.length + i + 1,
   src: `/female_data/${i + 1}.jpg`,
   label: `Female ${i + 1}`,
 }));
@@ -125,6 +128,21 @@ function getNextId(): number {
   return next;
 }
 
+// helpers for activity capture
+const epochNow = () =>
+  (performance.timeOrigin || (Date.now() - performance.now())) + performance.now();
+const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
+
+type RawEvent = {
+  Type: string;
+  X: number | null;          // 0..1 proportion of container width
+  Y: number | null;          // 0..1 proportion of container height
+  Key: string | null;
+  Target: string | null;
+  ScrollY: number | null;    // px (container scrollTop)
+  TimeMs: number;            // epoch ms (fractional ok)
+};
+
 export default function SurveyPage() {
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState('');
@@ -138,134 +156,117 @@ export default function SurveyPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [scores, setScores] = useState<{[k:string]: number} | null>(null);
 
-  type ActivityEvent = Record<string, unknown>;
+  // 🔧 scroll container ref (your .container is scrollable)
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  type ActivityEvent = RawEvent;
   const eventsRef = useRef<ActivityEvent[]>([]);
 
-// activity listeners
-useEffect(() => {
-  const vw = () => window.innerWidth || document.documentElement.clientWidth || 1;
-  const vh = () => window.innerHeight || document.documentElement.clientHeight || 1;
+  // convenience helpers tied to the container
+  const getContainerRect = () => containerRef.current?.getBoundingClientRect();
+  const getScrollTop = () => (containerRef.current ? containerRef.current.scrollTop : window.scrollY);
 
-  // fractional epoch ms
-  const epochNow = () =>
-    (performance.timeOrigin || (Date.now() - performance.now())) + performance.now();
+  // activity listeners (only the requested columns, with X/Y as container proportions 0..1)
+  useEffect(() => {
+    const getTargetTag = (evt: Event): string | null =>
+      evt.target instanceof Element ? evt.target.tagName : null;
 
-  const getTargetTag = (evt: Event): string | null =>
-    evt.target instanceof Element ? evt.target.tagName : null;
-
-  // start session info
-  const d = deviceInfo();
-  eventsRef.current.push({
-    Type: 'device_info',
-    PointerType: null,
-    Key: null,
-    Target: null,
-    ScrollY: null,
-    ScrollYFrac: null,
-    VW: vw(),
-    VH: vh(),
-    Time: epochNow(),
-  });
-
-  // last sample to drop repeats
-  const last = { x: Number.NaN, y: Number.NaN };
-
-  const samplePush = (pe: PointerEvent) => {
-    const W = vw(), H = vh();
-    // Use coalesced samples if available (gives sub-pixel coords on capable devices)
-    const samples = typeof pe.getCoalescedEvents === 'function' ? pe.getCoalescedEvents() : [pe];
-
-    for (const s of samples) {
-      const x = (s as PointerEvent).clientX;
-      const y = (s as PointerEvent).clientY;
-
-      // de-dup exact repeats (or nearly-equal repeats)
-      if (Math.abs(x - last.x) < 1e-9 && Math.abs(y - last.y) < 1e-9) continue;
-      last.x = x; last.y = y;
-
+    const push = (e: Partial<RawEvent>) => {
       eventsRef.current.push({
-        Type: pe.type,                // 'pointermove' / 'pointerdown' / 'pointerrawupdate'
-        PointerType: pe.pointerType as string,
-        X: x,                         // CSS px (can be fractional on some hardware)
+        Type: e.Type || 'unknown',
+        X: e.X ?? null,
+        Y: e.Y ?? null,
+        Key: e.Key ?? null,
+        Target: e.Target ?? null,
+        ScrollY: e.ScrollY ?? getScrollTop(),
+        TimeMs: e.TimeMs ?? epochNow(),
+      });
+    };
+
+    // session start marker
+    push({ Type: 'session_start', X: null, Y: null, Key: null, Target: null, ScrollY: getScrollTop(), TimeMs: epochNow() });
+
+    // de-dup signature (drop near-identical samples within ~1 frame)
+    let lastSig = '';
+    let lastTs = 0;
+    const makeSig = (type: string, x: number, y: number, sy: number) =>
+      `${type}:${x.toFixed(3)}:${y.toFixed(3)}:${Math.round(sy)}`;
+
+    const samplePointer = (pe: PointerEvent) => {
+      const rect = getContainerRect();
+      const W = rect?.width ?? (window.innerWidth || 1);
+      const H = rect?.height ?? (window.innerHeight || 1);
+
+      // position relative to container
+      const xpx = pe.clientX - (rect?.left ?? 0);
+      const ypx = pe.clientY - (rect?.top ?? 0);
+
+      const x = clamp01(xpx / W);
+      const y = clamp01(ypx / H);
+      const sy = getScrollTop();
+
+      // de-dup: if same XY+scroll very recently, skip
+      const now = epochNow();
+      const sig = makeSig(pe.type, x, y, sy);
+      if (sig === lastSig && now - lastTs < 17) return;
+      lastSig = sig; lastTs = now;
+
+      push({
+        Type: pe.type, // 'pointermove'|'pointerdown'|'pointerup'
+        X: x,
         Y: y,
-        XPerc: x / W,                 // 0..1
-        YPerc: y / H,                 // 0..1
         Key: null,
         Target: getTargetTag(pe),
-        ScrollY: window.scrollY,
-        ScrollYFrac: (() => {
-          const max = Math.max(0, document.documentElement.scrollHeight - H);
-          return max ? window.scrollY / max : 0;
-        })(),
-        VW: W,
-        VH: H,
-        Time: epochNow(),             // fractional ms
+        ScrollY: sy,
+        TimeMs: now
       });
-    }
-  };
+    };
 
-  const onPointerMove = (e: PointerEvent) => samplePush(e);
-  const onPointerDown = (e: PointerEvent) => samplePush(e);
-  const onPointerUp   = (e: PointerEvent) => samplePush(e);
+    const onPointerMove = (e: PointerEvent) => samplePointer(e);
+    const onPointerDown = (e: PointerEvent) => samplePointer(e);
+    const onPointerUp   = (e: PointerEvent) => samplePointer(e);
 
-  // High-rate, unfiltered stream with more precise coords on some devices
-  const onPointerRaw  = (e: PointerEvent) => samplePush(e);
+    const onKeyDown = (e: KeyboardEvent) => {
+      push({
+        Type: 'keydown',
+        X: null, Y: null,
+        Key: e.key,
+        Target: null,
+        ScrollY: getScrollTop(),
+        TimeMs: epochNow()
+      });
+    };
 
-  // Keyboard + scroll still recorded
-  const onKeyDown = (e: KeyboardEvent) => {
-    eventsRef.current.push({
-      Type: 'keydown',
-      PointerType: null,
-      X: null, Y: null, XPerc: null, YPerc: null,
-      Key: e.key,
-      Target: null,
-      ScrollY: null,
-      ScrollYFrac: null,
-      VW: vw(), VH: vh(),
-      Time: epochNow(),
-    });
-  };
+    const onScroll = () => {
+      push({
+        Type: 'scroll',
+        X: null, Y: null,
+        Key: null,
+        Target: null,
+        ScrollY: getScrollTop(),
+        TimeMs: epochNow()
+      });
+    };
 
-  const onScroll = () => {
-    const H = vh();
-    const frac = (() => {
-      const max = Math.max(0, document.documentElement.scrollHeight - H);
-      return max ? window.scrollY / max : 0;
-    })();
-    eventsRef.current.push({
-      Type: 'scroll',
-      PointerType: null,
-      X: null, Y: null, XPerc: null, YPerc: null,
-      Key: null,
-      Target: null,
-      ScrollY: window.scrollY,
-      ScrollYFrac: frac,
-      VW: vw(), VH: vh(),
-      Time: epochNow(),
-    });
-  };
+    // attach to document for pointer/keyboard
+    document.addEventListener('pointermove', onPointerMove, { passive: true });
+    document.addEventListener('pointerdown', onPointerDown, { passive: true });
+    document.addEventListener('pointerup',   onPointerUp,   { passive: true });
+    // 🔕 intentionally NOT listening to 'pointerrawupdate' to reduce duplicates
+    document.addEventListener('keydown', onKeyDown);
 
-  // register listeners
-  document.addEventListener('pointermove', onPointerMove, { passive: true });
-  document.addEventListener('pointerdown', onPointerDown, { passive: true });
-  document.addEventListener('pointerup',   onPointerUp,   { passive: true });
+    // attach scroll to the actual scroller (container)
+    const el = containerRef.current;
+    el?.addEventListener('scroll', onScroll, { passive: true });
 
-  // if supported, listen to raw updates too
-  document.addEventListener('pointerrawupdate', onPointerRaw as EventListener, { passive: true });
-
-  document.addEventListener('keydown', onKeyDown);
-  window.addEventListener('scroll', onScroll, { passive: true });
-
-  return () => {
-    document.removeEventListener('pointermove', onPointerMove);
-    document.removeEventListener('pointerdown', onPointerDown);
-    document.removeEventListener('pointerup',   onPointerUp);
-    document.removeEventListener('pointerrawupdate', onPointerRaw as EventListener);
-    document.removeEventListener('keydown', onKeyDown);
-    window.removeEventListener('scroll', onScroll);
-  };
-}, []);
-
+    return () => {
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('pointerup',   onPointerUp);
+      document.removeEventListener('keydown', onKeyDown);
+      el?.removeEventListener('scroll', onScroll);
+    };
+  }, []);
 
   const images = useMemo(() => {
     if (gender === 'Male') return maleImagesPublic;
@@ -293,7 +294,7 @@ useEffect(() => {
       return;
     }
     setStep(2);
-    document.querySelector('.container')?.scrollTo({ top: 0, behavior: 'smooth' });
+    containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handlePrev = () => setStep(1);
@@ -330,8 +331,24 @@ useEffect(() => {
     const scoresNow = computeScores();
     setScores(scoresNow);
 
+    // Assign a ParticipantID on submit (so we don’t burn IDs on abandoned forms)
+    const participantID = getNextId();
+
+    // Transform events -> only the requested columns, add Seq + ParticipantID + TimeISO
+    const finalEvents = eventsRef.current.map((ev, i) => ({
+      ParticipantID: participantID,
+      Seq: i + 1,
+      Type: ev.Type,
+      X: ev.X,                // 0..1 proportion of container width
+      Y: ev.Y,                // 0..1 proportion of container height
+      Key: ev.Key,
+      Target: ev.Target,
+      ScrollY: ev.ScrollY,
+      TimeISO: new Date(Math.round(ev.TimeMs)).toISOString(),
+    }));
+
     const payload = {
-      ID: getNextId(),
+      ID: participantID,
       Name: name,
       Age: Number(age),
       Profession: profession,
@@ -340,7 +357,9 @@ useEffect(() => {
       TIPI1: answers['q1'], TIPI2: answers['q2'], TIPI3: answers['q3'], TIPI4: answers['q4'], TIPI5: answers['q5'],
       TIPI6: answers['q6'], TIPI7: answers['q7'], TIPI8: answers['q8'], TIPI9: answers['q9'], TIPI10: answers['q10'],
       SelectedImages: JSON.stringify(Object.entries(selectedImages).map(([id, like]) => ({ id, like }))),
-      ActivityEvents: eventsRef.current,
+
+      // << only these columns are sent for activity events >>
+      ActivityEvents: finalEvents,
     };
 
     try {
@@ -351,15 +370,22 @@ useEffect(() => {
       });
       const data = await resp.json();
       if (!resp.ok || !data?.success) throw new Error(data?.message || 'Save failed');
-      //setMessage('Saved on server. Go to /admin to download Excels.');
       setModalOpen(true);
-      // reset
+
+      // reset everything for a new session
       setStep(1);
       setName(''); setAge(''); setProfession(''); setLivingArea(''); setGender('');
       setAnswers({}); setSelectedImages({});
       eventsRef.current = [];
-      const d = deviceInfo();
-      eventsRef.current.push({ Type:'device_info', DeviceType:d.deviceType, IsTouch:d.isTouch, IsMobile:d.isMobile, UserAgent:d.userAgent, Time:Date.now() });
+      // start new session marker
+      eventsRef.current.push({
+        Type: 'session_start',
+        X: null, Y: null,
+        Key: null,
+        Target: null,
+        ScrollY: getScrollTop(),
+        TimeMs: epochNow()
+      });
     } catch (err: unknown) {
       if (err instanceof Error) {
         alert(err.message || 'Server error');
@@ -370,7 +396,7 @@ useEffect(() => {
   };
 
   return (
-    <div className="container">
+    <div className="container" ref={containerRef}>
       <h2>OCEAN Personality Survey</h2>
 
       <form id="surveyForm" onSubmit={handleSubmit}>

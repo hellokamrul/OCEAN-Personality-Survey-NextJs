@@ -1,3 +1,4 @@
+// src/controllers/handleSubmit.ts
 import { randomUUID } from 'node:crypto';
 import { SurveyPayload } from '../models/survey';
 import { computeTipiScores } from '../utils/tipi';
@@ -8,6 +9,7 @@ export async function handleSubmit(payload: SurveyPayload) {
 
   const ParticipantID = randomUUID();
   const scores = computeTipiScores(payload);
+  const submittedAtISO = new Date().toISOString();
 
   const participantRow = {
     ParticipantID,
@@ -24,39 +26,60 @@ export async function handleSubmit(payload: SurveyPayload) {
     Score_Conscientiousness: scores.Conscientiousness,
     Score_EmotionalStability: scores.EmotionalStability,
     Score_Openness: scores.Openness,
-    SubmittedAt: new Date().toISOString(),
+    SubmittedAt: submittedAtISO,
   };
 
-  // ✅ wait for the workbook write to finish
   await appendRows(FILES.participants, 'Participants', [participantRow]);
 
-  const evRows = (payload.ActivityEvents || []).map((e, i) => ({
-    ParticipantID,
-    Seq: i + 1,
-    Type: e?.Type ?? '',
-    X: e?.X ?? '',
-    Y: e?.Y ?? '',
-    XPerc: e?.XPerc ?? '',
-    YPerc: e?.YPerc ?? '',
-    Key: e?.Key ?? '',
-    Target: e?.Target ?? '',
-    ScrollY: e?.ScrollY ?? '',
-    ScrollYFrac: e?.ScrollYFrac ?? '',
-    PointerType: e?.PointerType ?? '',
-    VW: e?.VW ?? '',
-    VH: e?.VH ?? '',
-    TimeEpochMs: e?.Time ?? '',
-    TimeISO: e?.Time ? new Date(e.Time).toISOString() : '',
-  }));
+  // ---- Events: only the requested columns ----
+  type AnyEvent = Record<string, unknown>;
+  const evs: AnyEvent[] = Array.isArray(payload.ActivityEvents) ? payload.ActivityEvents as AnyEvent[] : [];
+
+  const toNum = (v: unknown) =>
+    typeof v === 'number' ? v :
+    (typeof v === 'string' ? Number(v) : NaN);
+
+  const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+
+  const evRows = evs.map((e, i) => {
+    const nx = toNum(e?.X);
+    const ny = toNum(e?.Y);
+    const x = Number.isFinite(nx) ? clamp01(nx) : '';
+    const y = Number.isFinite(ny) ? clamp01(ny) : '';
+
+    const scrollRaw = toNum(e?.ScrollY);
+    const scrollY = Number.isFinite(scrollRaw) ? Math.round(scrollRaw) : '';
+
+    // Prefer TimeISO from client; else accept TimeEpochMs fallback
+    let timeISO = '';
+    if (typeof e?.TimeISO === 'string' && e.TimeISO) {
+      timeISO = new Date(e.TimeISO).toISOString();
+    } else {
+      const te = toNum(e?.TimeEpochMs);
+      if (Number.isFinite(te)) timeISO = new Date(te).toISOString();
+    }
+
+    return {
+      ParticipantID,
+      Seq: i + 1,
+      Type: (e?.Type as string) ?? '',
+      X: x,
+      Y: y,
+      Key: (e?.Key as string) ?? '',
+      Target: (e?.Target as string) ?? '',
+      ScrollY: scrollY,
+      TimeISO: timeISO,
+    };
+  });
 
   if (evRows.length) {
-    // ✅ wait
     await appendRows(FILES.events, 'Events', evRows);
   }
 
+  // ---- Image reactions (unchanged) ----
   type SelectedImage = { id: number; like?: string };
   let sel: SelectedImage[] = [];
-  try { sel = JSON.parse(payload.SelectedImages || '[]'); } catch {}
+  try { sel = JSON.parse((payload as { SelectedImages?: string }).SelectedImages || '[]'); } catch {}
 
   const imgRows = sel.map(x => ({
     ParticipantID,
@@ -65,7 +88,6 @@ export async function handleSubmit(payload: SurveyPayload) {
   }));
 
   if (imgRows.length) {
-    // ✅ wait
     await appendRows(FILES.images, 'ImageReactions', imgRows);
   }
 
