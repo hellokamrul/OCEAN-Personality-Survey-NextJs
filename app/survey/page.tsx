@@ -156,6 +156,9 @@ export default function SurveyPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [scores, setScores] = useState<{[k:string]: number} | null>(null);
 
+  // NEW: lock UI while saving
+  const [submitting, setSubmitting] = useState(false);
+
   // 🔧 scroll container ref (your .container is scrollable)
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -324,45 +327,48 @@ export default function SurveyPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (submitting) return; // prevent double submits
+
     if (!Object.keys(selectedImages).length) {
       alert('Please select at least one image and assign a like status.');
       return;
     }
-    const scoresNow = computeScores();
-    setScores(scoresNow);
 
-    // Assign a ParticipantID on submit (so we don’t burn IDs on abandoned forms)
-    const participantID = getNextId();
-
-    // Transform events -> only the requested columns, add Seq + ParticipantID + TimeISO
-    const finalEvents = eventsRef.current.map((ev, i) => ({
-      ParticipantID: participantID,
-      Seq: i + 1,
-      Type: ev.Type,
-      X: ev.X,                // 0..1 proportion of container width
-      Y: ev.Y,                // 0..1 proportion of container height
-      Key: ev.Key,
-      Target: ev.Target,
-      ScrollY: ev.ScrollY,
-      TimeISO: new Date(Math.round(ev.TimeMs)).toISOString(),
-    }));
-
-    const payload = {
-      ID: participantID,
-      Name: name,
-      Age: Number(age),
-      Profession: profession,
-      LivingArea: livingArea,
-      Gender: gender,
-      TIPI1: answers['q1'], TIPI2: answers['q2'], TIPI3: answers['q3'], TIPI4: answers['q4'], TIPI5: answers['q5'],
-      TIPI6: answers['q6'], TIPI7: answers['q7'], TIPI8: answers['q8'], TIPI9: answers['q9'], TIPI10: answers['q10'],
-      SelectedImages: JSON.stringify(Object.entries(selectedImages).map(([id, like]) => ({ id, like }))),
-
-      // << only these columns are sent for activity events >>
-      ActivityEvents: finalEvents,
-    };
-
+    setSubmitting(true); // lock UI
     try {
+      const scoresNow = computeScores();
+      setScores(scoresNow);
+
+      const participantID = getNextId();
+
+      const finalEvents = eventsRef.current.map((ev, i) => ({
+        ParticipantID: participantID,
+        Seq: i + 1,
+        Type: ev.Type,
+        X: ev.X,                // 0..1 proportion of container width
+        Y: ev.Y,                // 0..1 proportion of container height
+        Key: ev.Key,
+        Target: ev.Target,
+        ScrollY: ev.ScrollY,
+        TimeISO: new Date(Math.round(ev.TimeMs)).toISOString(),
+      }));
+
+      const payload = {
+        ID: participantID,
+        Name: name,
+        Age: Number(age),
+        Profession: profession,
+        LivingArea: livingArea,
+        Gender: gender,
+        TIPI1: answers['q1'], TIPI2: answers['q2'], TIPI3: answers['q3'], TIPI4: answers['q4'], TIPI5: answers['q5'],
+        TIPI6: answers['q6'], TIPI7: answers['q7'], TIPI8: answers['q8'], TIPI9: answers['q9'], TIPI10: answers['q10'],
+        SelectedImages: JSON.stringify(Object.entries(selectedImages).map(([id, like]) => ({ id, like }))),
+
+        // << only these columns are sent for activity events >>
+        ActivityEvents: finalEvents,
+      };
+
       const resp = await fetch('/api/survey/submit', {
         method: 'POST',
         headers: { 'Content-Type':'application/json' },
@@ -392,6 +398,8 @@ export default function SurveyPage() {
       } else {
         alert('Server error');
       }
+    } finally {
+      setSubmitting(false); // unlock UI regardless
     }
   };
 
@@ -399,7 +407,7 @@ export default function SurveyPage() {
     <div className="container" ref={containerRef}>
       <h2>OCEAN Personality Survey</h2>
 
-      <form id="surveyForm" onSubmit={handleSubmit}>
+      <form id="surveyForm" onSubmit={handleSubmit} aria-busy={submitting}>
         {/* Step 1 */}
         {step === 1 && (
           <div id="step1">
@@ -463,7 +471,9 @@ export default function SurveyPage() {
               ))}
             </div>
 
-            <button type="button" id="nextStepBtn" onClick={handleNext}>Next</button>
+            <button type="button" id="nextStepBtn" onClick={handleNext} disabled={submitting} aria-disabled={submitting}>
+              Next
+            </button>
           </div>
         )}
 
@@ -472,7 +482,7 @@ export default function SurveyPage() {
           <div id="step2">
             <div className="question">
               <label>Choose the images that best match your mood (multiple allowed):</label>
-              <div className="image-choices" id="imageChoices">
+              <div className="image-choices" id="imageChoices" aria-busy={submitting}>
                 {images.map(imgObj => {
                   const sentiment = selectedImages[imgObj.id];
                   return (
@@ -486,6 +496,8 @@ export default function SurveyPage() {
                             key={val}
                             className={`img-like-btn ${val.toLowerCase()} ${sentiment===val?'selected':''}`}
                             onClick={() => onSelectSentiment(imgObj.id, val)}
+                            disabled={submitting}
+                            aria-disabled={submitting}
                           >
                             {val==='Like' ? '👍 Like' : val==='Neutral' ? '😐 Neutral' : '👎 Dislike'}
                           </button>
@@ -497,8 +509,30 @@ export default function SurveyPage() {
               </div>
             </div>
             <div className="step-btns">
-              <button type="button" id="prevStepBtn" style={{width:'48%'}} onClick={handlePrev}>Back</button>
-              <button type="submit" id="submitBtn" style={{width:'48%'}}>Submit</button>
+              <button
+                type="button"
+                id="prevStepBtn"
+                style={{width:'48%'}}
+                onClick={handlePrev}
+                disabled={submitting}
+                aria-disabled={submitting}
+              >
+                Back
+              </button>
+              <button
+                type="submit"
+                id="submitBtn"
+                style={{width:'48%'}}
+                disabled={submitting}
+                aria-disabled={submitting}
+                aria-busy={submitting}
+              >
+                {submitting ? (
+                  <>
+                    <span className="btn-spinner" aria-hidden="true" /> Saving…
+                  </>
+                ) : 'Submit'}
+              </button>
             </div>
           </div>
         )}
@@ -540,6 +574,16 @@ export default function SurveyPage() {
       </div>
 
       <div id="message">{message}</div>
+
+      {submitting && (
+        <div className="page-loader" role="status" aria-live="polite" aria-label="Saving">
+          <div className="page-loader-box">
+            <div className="page-loader-ring" />
+            <div className="page-loader-text">Saving…</div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
